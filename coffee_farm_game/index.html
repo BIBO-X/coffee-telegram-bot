@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>☕ مزرعة القهوة السريعة</title>
+  <!-- مكتبة تيليجرام الرسمية للتطبيقات المصغرة -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- شريط الحالة العلوي -->
+  <header class="stats-bar">
+    <div class="stat">
+      <span class="stat-label">💰 الرصيد</span>
+      <span class="stat-value" id="coins">0</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">⚡ في الثانية</span>
+      <span class="stat-value" id="cps">0</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">👆 لكل نقرة</span>
+      <span class="stat-value" id="perClick">1</span>
+    </div>
+  </header>
+
+  <!-- رسالة الترحيب باسم اللاعب (من تيليجرام) -->
+  <p class="welcome" id="welcome">أهلاً بك أيها الباريستا! ☕</p>
+
+  <!-- زر النقر الرئيسي -->
+  <main class="click-area">
+    <button id="coffee-btn" aria-label="انقر لصنع القهوة">
+      <span class="coffee-emoji">☕</span>
+    </button>
+    <p class="hint">انقر على الفنجان لصنع القهوة!</p>
+  </main>
+
+  <!-- زر الإعلان التجريبي -->
+  <button id="ad-btn" class="ad-button">
+    🎬 شاهد إعلاناً: مكافأة + إنتاج مضاعف ×2 لمدة دقيقة
+  </button>
+
+  <!-- متجر التطويرات -->
+  <section class="shop">
+    <h2>🛠️ متجر التطويرات</h2>
+    <div id="upgrades-list"></div>
+  </section>
+
+  <!-- نافذة الإعلان الوهمي -->
+  <div id="ad-overlay" class="ad-overlay hidden">
+    <div class="ad-box">
+      <p class="ad-title">📺 إعلان تجريبي</p>
+      <div class="ad-fake-video">
+        <span class="ad-spinner"></span>
+        <p>☕ قهوتنا هي الأفضل في المدينة!</p>
+      </div>
+      <p class="ad-countdown">تنتهي المكافأة بعد: <span id="ad-timer">5</span> ثوانٍ</p>
+    </div>
+  </div>
+
+  <!-- إشعار المكافأة -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="game.js"></script>
+</body>
+</html>

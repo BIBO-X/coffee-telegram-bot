@@ -1,82 +1,18 @@
 import logging
 import os
 import asyncio
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import threading
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from database import db
 
-# إعدادات البوت
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# إعدادات الاقتصاد المتوازنة
-ECONOMY = {
-    "click_base": 1,           # قوة النقر الأساسية
-    "click_upgrade_bonus": 1,  # زيادة قوة النقر لكل ترقية
-    "daily_bonus_base": 50,    # المكافأة اليومية الأساسية
-    "daily_bonus_multiplier": 1.5,  # مضاعف المكافأة حسب المستوى
-    "offline_cap_hours": 8,    # الحد الأقصى للأرباح الغير متصلة
-}
+# رابط اللعبة المصغرة - عدّل هذا بعد رفع اللعبة
+GAME_URL = os.getenv("GAME_URL", "https://bibo-x.github.io/coffee-farm-game/")
 
-# تعريف الترقيات المتوازنة
-UPGRADES = {
-    "click_1": {
-        "name": "⚡ إصبع قوي",
-        "description": "+1 لكل نقرة",
-        "base_cost": 20,
-        "cost_multiplier": 1.5,
-        "type": "click",
-        "value": 1
-    },
-    "click_2": {
-        "name": "💪 يد محترفة",
-        "description": "+3 لكل نقرة",
-        "base_cost": 100,
-        "cost_multiplier": 1.6,
-        "type": "click",
-        "value": 3
-    },
-    "auto_1": {
-        "name": "🌱 بذرة قهوة",
-        "description": "+0.5 قهوة/ثانية",
-        "base_cost": 50,
-        "cost_multiplier": 1.4,
-        "type": "auto",
-        "value": 0.5
-    },
-    "auto_2": {
-        "name": "🌿 شجرة صغيرة",
-        "description": "+2 قهوة/ثانية",
-        "base_cost": 200,
-        "cost_multiplier": 1.45,
-        "type": "auto",
-        "value": 2
-    },
-    "auto_3": {
-        "name": "🌳 مزرعة صغيرة",
-        "description": "+5 قهوة/ثانية",
-        "base_cost": 800,
-        "cost_multiplier": 1.5,
-        "type": "auto",
-        "value": 5
-    },
-    "auto_4": {
-        "name": "🏭 مصنع قهوة",
-        "description": "+20 قهوة/ثانية",
-        "base_cost": 3000,
-        "cost_multiplier": 1.55,
-        "type": "auto",
-        "value": 20
-    },
-    "auto_5": {
-        "name": "🏢 إمبراطورية قهوة",
-        "description": "+100 قهوة/ثانية",
-        "base_cost": 15000,
-        "cost_multiplier": 1.6,
-        "type": "auto",
-        "value": 100
-    }
-}
+# رابط الـ API على Railway
+API_URL = os.getenv("RAILWAY_STATIC_URL", "https://your-app.up.railway.app")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -87,7 +23,6 @@ logger = logging.getLogger(__name__)
 # ========== دوال مساعدة ==========
 
 def format_number(n):
-    """تنسيق الأرقام الكبيرة"""
     if n >= 1e9:
         return f"{n/1e9:.1f}B"
     elif n >= 1e6:
@@ -96,31 +31,10 @@ def format_number(n):
         return f"{n/1e3:.1f}K"
     return f"{int(n)}"
 
-def calculate_upgrade_cost(upgrade_id: str, owned_quantity: int) -> int:
-    """حساب تكلفة الترقية"""
-    upgrade = UPGRADES[upgrade_id]
-    return int(upgrade["base_cost"] * (upgrade["cost_multiplier"] ** owned_quantity))
-
-def calculate_player_cps(upgrades: dict) -> float:
-    """حساب إنتاج اللاعب التلقائي"""
-    total_cps = 0
-    for upgrade_id, quantity in upgrades.items():
-        if upgrade_id in UPGRADES and UPGRADES[upgrade_id]["type"] == "auto":
-            total_cps += UPGRADES[upgrade_id]["value"] * quantity
-    return total_cps
-
-def calculate_player_click_power(upgrades: dict) -> float:
-    """حساب قوة نقرة اللاعب"""
-    total_power = ECONOMY["click_base"]
-    for upgrade_id, quantity in upgrades.items():
-        if upgrade_id in UPGRADES and UPGRADES[upgrade_id]["type"] == "click":
-            total_power += UPGRADES[upgrade_id]["value"] * quantity
-    return total_power
-
 # ========== معالجات الأوامر ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر البداية"""
+    """أمر البداية مع زر اللعبة المصغرة"""
     user = update.effective_user
     
     # إنشاء أو جلب اللاعب
@@ -130,13 +44,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     offline_earnings = db.calculate_offline_earnings(user.id)
     if offline_earnings > 0:
         db.add_coins(user.id, offline_earnings, "offline_earnings")
-        player = db.get_or_create_player(user.id)
+        player = db.get_player(user.id)
     
     keyboard = [
-        [InlineKeyboardButton("🎮 العب الآن", callback_data="play")],
+        [InlineKeyboardButton("🎮 العب الآن", web_app=WebAppInfo(url=GAME_URL))],
         [InlineKeyboardButton("🛒 المتجر", callback_data="shop")],
         [InlineKeyboardButton("🏆 المتصدرون", callback_data="leaderboard")],
-        [InlineKeyboardButton("🎁 المكافأة اليومية", callback_data="daily")]
+        [InlineKeyboardButton("🎁 المكافأة اليومية", callback_data="daily")],
+        [InlineKeyboardButton("📋 المهمة اليومية", callback_data="quest")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -146,74 +61,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💰 **رصيدك:** {format_number(player['coins'])}
 ⚡ **إنتاجك:** {format_number(player['cps'])}/ثانية
 👆 **قوة النقرة:** {format_number(player['click_power'])}
+📊 **المستوى:** {player['level']}
 
 🎯 **هدفك:** ابنِ إمبراطورية القهوة الخاصة بك!
 
 {"💤 **أرباح أثناء غيابك:** +" + format_number(offline_earnings) if offline_earnings > 0 else ""}
+
+اضغط الزر بالأسفل لبدء اللعب! 👇
     """
     
     await update.message.reply_text(
         welcome_text,
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
-
-async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بدء اللعب"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    player = db.get_or_create_player(user.id)
-    
-    keyboard = [
-        [InlineKeyboardButton("☕ انقر للحصاد!", callback_data="click")],
-        [InlineKeyboardButton("🛒 المتجر", callback_data="shop")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"""
-🎮 **لوحة اللعب**
-
-💰 **الرصيد:** {format_number(player['coins'])}
-⚡ **إنتاج تلقائي:** {format_number(player['cps'])}/ثانية
-👆 **قوة النقرة:** {format_number(player['click_power'])}
-
-انقر الزر بالأسفل لجمع القهوة! ☕
-        """,
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
-
-async def click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة النقر"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    player = db.get_or_create_player(user.id)
-    
-    # إضافة العملات من النقرة
-    new_balance = db.add_coins(user.id, player['click_power'], "click")
-    
-    keyboard = [
-        [InlineKeyboardButton("☕ انقر مرة أخرى!", callback_data="click")],
-        [InlineKeyboardButton("🛒 المتجر", callback_data="shop")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"""
-✅ **+{format_number(player['click_power'])} قهوة!**
-
-💰 **الرصيد الجديد:** {format_number(new_balance)}
-⚡ **إنتاج تلقائي:** {format_number(player['cps'])}/ثانية
-
-استمر في النقر! ☕
-        """,
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -224,19 +82,12 @@ async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user = query.from_user
-    player = db.get_or_create_player(user.id)
-    upgrades = db.get_player_upgrades(user.id)
+    player = db.get_player(user.id)
     
-    keyboard = []
-    
-    for upgrade_id, upgrade in UPGRADES.items():
-        owned = upgrades.get(upgrade_id, 0)
-        cost = calculate_upgrade_cost(upgrade_id, owned)
-        
-        button_text = f"{upgrade['name']} - {format_number(cost)} 💰 (لديك: {owned})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"buy_{upgrade_id}")])
-    
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
+    keyboard = [
+        [InlineKeyboardButton("🎮 افتح اللعبة للشراء", web_app=WebAppInfo(url=GAME_URL))],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
@@ -245,52 +96,11 @@ async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 💰 **رصيدك:** {format_number(player['coins'])}
 
-اختر ترقية لشرائها:
+افتح اللعبة المصغرة لشراء الترقيات!
         """,
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
-
-async def buy_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شراء ترقية"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    upgrade_id = query.data.replace("buy_", "")
-    
-    if upgrade_id not in UPGRADES:
-        await query.answer("❌ ترقية غير صالحة!", show_alert=True)
-        return
-    
-    player = db.get_or_create_player(user.id)
-    upgrades = db.get_player_upgrades(user.id)
-    owned = upgrades.get(upgrade_id, 0)
-    cost = calculate_upgrade_cost(upgrade_id, owned)
-    
-    # التحقق من الرصيد
-    if player['coins'] < cost:
-        await query.answer(f"❌ تحتاج إلى {format_number(cost - player['coins'])} إضافية!", show_alert=True)
-        return
-    
-    # خصم العملات
-    if db.spend_coins(user.id, cost, "upgrade_purchase"):
-        # إضافة الترقية
-        db.add_upgrade(user.id, upgrade_id)
-        
-        # تحديث الإحصائيات
-        new_upgrades = db.get_player_upgrades(user.id)
-        new_cps = calculate_player_cps(new_upgrades)
-        new_click_power = calculate_player_click_power(new_upgrades)
-        
-        db.update_player_stats(user.id, click_power=new_click_power, cps=new_cps)
-        
-        await query.answer(f"✅ تم شراء {UPGRADES[upgrade_id]['name']}!", show_alert=True)
-        
-        # العودة للمتجر
-        await shop(update, context)
-    else:
-        await query.answer("❌ حدث خطأ في الشراء!", show_alert=True)
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض المتصدرين"""
@@ -329,7 +139,7 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user = query.from_user
-    player = db.get_or_create_player(user.id)
+    player = db.get_player(user.id)
     
     can_claim, remaining = db.can_claim_daily(user.id)
     
@@ -341,13 +151,13 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # حساب المكافأة
-    bonus = int(ECONOMY["daily_bonus_base"] * (ECONOMY["daily_bonus_multiplier"] ** (player['level'] - 1)))
+    bonus = int(50 * (1.5 ** (player['level'] - 1)))
     
     # منح المكافأة
     new_balance = db.claim_daily_bonus(user.id, bonus)
     
     keyboard = [
-        [InlineKeyboardButton("🎮 العب الآن", callback_data="play")],
+        [InlineKeyboardButton("🎮 العب الآن", web_app=WebAppInfo(url=GAME_URL))],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -365,19 +175,87 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+async def daily_quest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """المهمة اليومية"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    quest = db.get_daily_quest(user.id)
+    
+    status = "✅ مكتملة!" if quest['completed'] else "⏳ قيد التقدم"
+    if quest['claimed']:
+        status = "🎁 تم المطالبة بالمكافأة"
+    
+    keyboard = []
+    if quest['completed'] and not quest['claimed']:
+        keyboard.append([InlineKeyboardButton("🎁 المطالبة بالمكافأة", callback_data="claim_quest")])
+    
+    keyboard.append([InlineKeyboardButton("🎮 العب الآن", web_app=WebAppInfo(url=GAME_URL))])
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"""
+📋 **المهمة اليومية**
+
+{status}
+
+🎯 **التقدم:**
+• النقرات: {quest['clicks']}/100
+• القهوة المكتسبة: {format_number(quest['earned'])}/1000
+
+🎁 **المكافأة:** 500 قهوة
+        """,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+async def claim_quest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """المطالبة بمكافأة المهمة"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    result = db.claim_quest_reward(user.id)
+    
+    if not result:
+        await query.answer("❌ لم تكمل المهمة بعد!", show_alert=True)
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("🎮 العب الآن", web_app=WebAppInfo(url=GAME_URL))],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"""
+🎉 **مبروك!**
+
+✅ حصلت على مكافأة المهمة: **+{format_number(result['reward'])}** قهوة!
+💰 **رصيدك الجديد:** {format_number(result['new_balance'])}
+
+عد غداً لمزيد من المهمات! 📋
+        """,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """العودة للقائمة الرئيسية"""
     query = update.callback_query
     await query.answer()
     
     user = query.from_user
-    player = db.get_or_create_player(user.id)
+    player = db.get_player(user.id)
     
     keyboard = [
-        [InlineKeyboardButton("🎮 العب الآن", callback_data="play")],
+        [InlineKeyboardButton("🎮 العب الآن", web_app=WebAppInfo(url=GAME_URL))],
         [InlineKeyboardButton("🛒 المتجر", callback_data="shop")],
         [InlineKeyboardButton("🏆 المتصدرون", callback_data="leaderboard")],
-        [InlineKeyboardButton("🎁 المكافأة اليومية", callback_data="daily")]
+        [InlineKeyboardButton("🎁 المكافأة اليومية", callback_data="daily")],
+        [InlineKeyboardButton("📋 المهمة اليومية", callback_data="quest")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -388,6 +266,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💰 **رصيدك:** {format_number(player['coins'])}
 ⚡ **إنتاجك:** {format_number(player['cps'])}/ثانية
 👆 **قوة النقرة:** {format_number(player['click_power'])}
+📊 **المستوى:** {player['level']}
 
 ماذا تريد أن تفعل؟
         """,
@@ -395,28 +274,33 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ========== دالة الإنتاج التلقائي ==========
+# ========== تشغيل API في خيط منفصل ==========
 
-async def passive_income_job(context: ContextTypes.DEFAULT_TYPE):
-    """وظيفة الإنتاج التلقائي (تعمل كل دقيقة)"""
-    # هذه الوظيفة يمكن استخدامها لإضافة إنتاج تلقائي دوري
-    # حالياً نعتمد على حساب الأرباح عند العودة
-    pass
+def run_api():
+    """تشغيل Flask API في خيط منفصل"""
+    from api import app
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ========== التشغيل الرئيسي ==========
 
 def main():
-    # إنشاء التطبيق
+    # تشغيل API في الخلفية
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+    
+    logger.info("🌐 API يعمل في الخلفية...")
+    
+    # إنشاء تطبيق تيليجرام
     application = Application.builder().token(BOT_TOKEN).build()
     
     # إضافة المعالجات
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(play, pattern="^play$"))
-    application.add_handler(CallbackQueryHandler(click, pattern="^click$"))
     application.add_handler(CallbackQueryHandler(shop, pattern="^shop$"))
-    application.add_handler(CallbackQueryHandler(buy_upgrade, pattern="^buy_"))
     application.add_handler(CallbackQueryHandler(leaderboard, pattern="^leaderboard$"))
     application.add_handler(CallbackQueryHandler(daily_bonus, pattern="^daily$"))
+    application.add_handler(CallbackQueryHandler(daily_quest, pattern="^quest$"))
+    application.add_handler(CallbackQueryHandler(claim_quest, pattern="^claim_quest$"))
     application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back$"))
     
     # تشغيل البوت

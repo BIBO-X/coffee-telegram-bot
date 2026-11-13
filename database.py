@@ -4,7 +4,6 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
-# إعدادات الاتصال بقاعدة البيانات
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 class Database:
@@ -14,7 +13,6 @@ class Database:
     
     @contextmanager
     def get_connection(self):
-        """إدارة الاتصال بقاعدة البيانات"""
         conn = psycopg2.connect(self.database_url)
         try:
             yield conn
@@ -26,11 +24,9 @@ class Database:
             conn.close()
     
     def init_tables(self):
-        """إنشاء الجداول المطلوبة"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # جدول اللاعبين الرئيسي
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS players (
                     user_id BIGINT PRIMARY KEY,
@@ -41,13 +37,13 @@ class Database:
                     click_power DECIMAL(10, 2) DEFAULT 1,
                     cps DECIMAL(10, 2) DEFAULT 0,
                     level INTEGER DEFAULT 1,
+                    experience INTEGER DEFAULT 0,
                     last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_daily_bonus TIMESTAMP DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # جدول الترقيات المملوكة
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS player_upgrades (
                     id SERIAL PRIMARY KEY,
@@ -58,7 +54,6 @@ class Database:
                 )
             """)
             
-            # جدول سجل المعاملات (للأمان والتتبع)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transactions (
                     id SERIAL PRIMARY KEY,
@@ -70,24 +65,41 @@ class Database:
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_quests (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES players(user_id) ON DELETE CASCADE,
+                    quest_date DATE DEFAULT CURRENT_DATE,
+                    clicks INTEGER DEFAULT 0,
+                    earned DECIMAL(20, 2) DEFAULT 0,
+                    completed BOOLEAN DEFAULT FALSE,
+                    claimed BOOLEAN DEFAULT FALSE,
+                    UNIQUE(user_id, quest_date)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS friends (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES players(user_id) ON DELETE CASCADE,
+                    friend_id BIGINT REFERENCES players(user_id) ON DELETE CASCADE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, friend_id)
+                )
+            """)
+            
             cursor.close()
     
     # ========== دوال اللاعبين ==========
     
     def get_or_create_player(self, user_id: int, username: str = None, first_name: str = None):
-        """جلب بيانات اللاعب أو إنشاؤه إذا لم يكن موجوداً"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # محاولة جلب اللاعب
-            cursor.execute(
-                "SELECT * FROM players WHERE user_id = %s",
-                (user_id,)
-            )
+            cursor.execute("SELECT * FROM players WHERE user_id = %s", (user_id,))
             player = cursor.fetchone()
             
             if not player:
-                # إنشاء لاعب جديد
                 cursor.execute("""
                     INSERT INTO players (user_id, username, first_name, coins, click_power, cps)
                     VALUES (%s, %s, %s, 0, 1, 0)
@@ -99,36 +111,20 @@ class Database:
             cursor.close()
             return dict(player)
     
-    def update_player_coins(self, user_id: int, new_coins: float, total_earned: float = None):
-        """تحديث رصيد اللاعب"""
+    def get_player(self, user_id: int):
+        """جلب بيانات اللاعب فقط"""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            if total_earned is not None:
-                cursor.execute("""
-                    UPDATE players 
-                    SET coins = %s, total_earned = %s, last_active = CURRENT_TIMESTAMP
-                    WHERE user_id = %s
-                """, (new_coins, total_earned, user_id))
-            else:
-                cursor.execute("""
-                    UPDATE players 
-                    SET coins = %s, last_active = CURRENT_TIMESTAMP
-                    WHERE user_id = %s
-                """, (new_coins, user_id))
-            
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT * FROM players WHERE user_id = %s", (user_id,))
+            player = cursor.fetchone()
             cursor.close()
+            return dict(player) if player else None
     
     def add_coins(self, user_id: int, amount: float, transaction_type: str = "earn"):
-        """إضافة عملات للاعب مع تسجيل المعاملة"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # جلب الرصيد الحالي
-            cursor.execute(
-                "SELECT coins, total_earned FROM players WHERE user_id = %s",
-                (user_id,)
-            )
+            cursor.execute("SELECT coins, total_earned FROM players WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
             
             if not result:
@@ -138,7 +134,6 @@ class Database:
             new_balance = float(result['coins']) + amount
             new_total = float(result['total_earned']) + amount
             
-            # تحديث الرصيد
             cursor.execute("""
                 UPDATE players 
                 SET coins = %s, total_earned = %s, last_active = CURRENT_TIMESTAMP
@@ -148,7 +143,6 @@ class Database:
             
             updated = cursor.fetchone()
             
-            # تسجيل المعاملة
             cursor.execute("""
                 INSERT INTO transactions (user_id, transaction_type, amount, balance_after)
                 VALUES (%s, %s, %s, %s)
@@ -159,15 +153,10 @@ class Database:
             return float(updated['coins'])
     
     def spend_coins(self, user_id: int, amount: float, transaction_type: str = "spend") -> bool:
-        """خصم عملات من اللاعب (للشراء)"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # التحقق من الرصيد
-            cursor.execute(
-                "SELECT coins FROM players WHERE user_id = %s",
-                (user_id,)
-            )
+            cursor.execute("SELECT coins FROM players WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
             
             if not result or float(result['coins']) < amount:
@@ -176,7 +165,6 @@ class Database:
             
             new_balance = float(result['coins']) - amount
             
-            # خصم المبلغ
             cursor.execute("""
                 UPDATE players 
                 SET coins = %s, last_active = CURRENT_TIMESTAMP
@@ -186,7 +174,6 @@ class Database:
             
             updated = cursor.fetchone()
             
-            # تسجيل المعاملة
             cursor.execute("""
                 INSERT INTO transactions (user_id, transaction_type, amount, balance_after)
                 VALUES (%s, %s, %s, %s)
@@ -196,8 +183,7 @@ class Database:
             cursor.close()
             return True
     
-    def update_player_stats(self, user_id: int, click_power: float = None, cps: float = None, level: int = None):
-        """تحديث إحصائيات اللاعب"""
+    def update_player_stats(self, user_id: int, click_power: float = None, cps: float = None, level: int = None, experience: int = None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -216,6 +202,10 @@ class Database:
                 updates.append("level = %s")
                 params.append(level)
             
+            if experience is not None:
+                updates.append("experience = %s")
+                params.append(experience)
+            
             if updates:
                 updates.append("last_active = CURRENT_TIMESTAMP")
                 params.append(user_id)
@@ -228,19 +218,14 @@ class Database:
     # ========== دوال الترقيات ==========
     
     def get_player_upgrades(self, user_id: int) -> dict:
-        """جلب جميع ترقيات اللاعب"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute(
-                "SELECT upgrade_id, quantity FROM player_upgrades WHERE user_id = %s",
-                (user_id,)
-            )
+            cursor.execute("SELECT upgrade_id, quantity FROM player_upgrades WHERE user_id = %s", (user_id,))
             upgrades = {row['upgrade_id']: row['quantity'] for row in cursor.fetchall()}
             cursor.close()
             return upgrades
     
     def add_upgrade(self, user_id: int, upgrade_id: str):
-        """إضافة ترقية للاعب"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -254,13 +239,9 @@ class Database:
     # ========== دوال المكافأة اليومية ==========
     
     def can_claim_daily(self, user_id: int) -> tuple:
-        """التحقق من إمكانية المطالبة بالمكافأة اليومية"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute(
-                "SELECT last_daily_bonus FROM players WHERE user_id = %s",
-                (user_id,)
-            )
+            cursor.execute("SELECT last_daily_bonus FROM players WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
             cursor.close()
             
@@ -280,11 +261,9 @@ class Database:
                 return False, f"{hours}h {minutes}m"
     
     def claim_daily_bonus(self, user_id: int, bonus_amount: float):
-        """منح المكافأة اليومية"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # تحديث وقت المطالبة
             cursor.execute("""
                 UPDATE players 
                 SET last_daily_bonus = CURRENT_TIMESTAMP
@@ -302,7 +281,6 @@ class Database:
                 WHERE user_id = %s
             """, (new_balance, new_total, user_id))
             
-            # تسجيل المعاملة
             cursor.execute("""
                 INSERT INTO transactions (user_id, transaction_type, amount, balance_after)
                 VALUES (%s, %s, %s, %s)
@@ -315,15 +293,9 @@ class Database:
     # ========== دوال الإنتاج التلقائي ==========
     
     def calculate_offline_earnings(self, user_id: int) -> float:
-        """حساب الأرباح أثناء الغياب"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT cps, last_active 
-                FROM players 
-                WHERE user_id = %s
-            """, (user_id,))
-            
+            cursor.execute("SELECT cps, last_active FROM players WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
             cursor.close()
             
@@ -333,18 +305,13 @@ class Database:
             last_active = result['last_active']
             now = datetime.now()
             hours_away = (now - last_active).total_seconds() / 3600
-            
-            # الحد الأقصى 8 ساعات من الأرباح الغير متصلة
             hours_away = min(hours_away, 8)
             
-            earnings = float(result['cps']) * hours_away * 3600  # تحويل للثواني
-            
-            return earnings
+            return float(result['cps']) * hours_away * 3600
     
     # ========== دوال المتصدرين ==========
     
     def get_leaderboard(self, limit: int = 10) -> list:
-        """جلب قائمة المتصدرين"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
@@ -353,10 +320,168 @@ class Database:
                 ORDER BY total_earned DESC
                 LIMIT %s
             """, (limit,))
-            
             leaders = [dict(row) for row in cursor.fetchall()]
             cursor.close()
             return leaders
+    
+    # ========== دوال المستويات ==========
+    
+    def add_experience(self, user_id: int, exp_amount: int):
+        """إضافة نقاط خبرة ورفع المستوى"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute("SELECT experience, level FROM players WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                cursor.close()
+                return None
+            
+            new_exp = result['experience'] + exp_amount
+            current_level = result['level']
+            
+            # حساب المستوى الجديد (كل مستوى يحتاج level * 100 نقطة)
+            exp_needed = current_level * 100
+            leveled_up = False
+            
+            while new_exp >= exp_needed:
+                new_exp -= exp_needed
+                current_level += 1
+                exp_needed = current_level * 100
+                leveled_up = True
+            
+            cursor.execute("""
+                UPDATE players 
+                SET experience = %s, level = %s
+                WHERE user_id = %s
+            """, (new_exp, current_level, user_id))
+            
+            conn.commit()
+            cursor.close()
+            
+            return {
+                'leveled_up': leveled_up,
+                'new_level': current_level,
+                'current_exp': new_exp,
+                'exp_needed': exp_needed
+            }
+    
+    # ========== دوال المهمات اليومية ==========
+    
+    def get_daily_quest(self, user_id: int):
+        """جلب مهمة اليوم"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # التحقق من وجود مهمة اليوم
+            cursor.execute("""
+                SELECT * FROM daily_quests 
+                WHERE user_id = %s AND quest_date = CURRENT_DATE
+            """, (user_id,))
+            
+            quest = cursor.fetchone()
+            
+            if not quest:
+                # إنشاء مهمة جديدة لليوم
+                cursor.execute("""
+                    INSERT INTO daily_quests (user_id, quest_date)
+                    VALUES (%s, CURRENT_DATE)
+                    RETURNING *
+                """, (user_id,))
+                quest = cursor.fetchone()
+                conn.commit()
+            
+            cursor.close()
+            return dict(quest)
+    
+    def update_quest_progress(self, user_id: int, clicks: int = 0, earned: float = 0):
+        """تحديث تقدم المهمة"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute("""
+                UPDATE daily_quests 
+                SET clicks = clicks + %s, earned = earned + %s
+                WHERE user_id = %s AND quest_date = CURRENT_DATE
+                RETURNING clicks, earned
+            """, (clicks, earned, user_id))
+            
+            result = cursor.fetchone()
+            
+            # التحقق من إكمال المهمة (100 نقرة أو 1000 عملة)
+            if result and (result['clicks'] >= 100 or result['earned'] >= 1000):
+                cursor.execute("""
+                    UPDATE daily_quests 
+                    SET completed = TRUE
+                    WHERE user_id = %s AND quest_date = CURRENT_DATE
+                """, (user_id,))
+            
+            conn.commit()
+            cursor.close()
+            return dict(result) if result else None
+    
+    def claim_quest_reward(self, user_id: int):
+        """المطالبة بمكافأة المهمة"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute("""
+                SELECT completed, claimed FROM daily_quests 
+                WHERE user_id = %s AND quest_date = CURRENT_DATE
+            """, (user_id,))
+            
+            quest = cursor.fetchone()
+            
+            if not quest or not quest['completed'] or quest['claimed']:
+                cursor.close()
+                return None
+            
+            # منح المكافأة
+            reward = 500
+            cursor.execute("""
+                UPDATE daily_quests 
+                SET claimed = TRUE
+                WHERE user_id = %s AND quest_date = CURRENT_DATE
+            """, (user_id,))
+            
+            conn.commit()
+            cursor.close()
+            
+            new_balance = self.add_coins(user_id, reward, "quest_reward")
+            return {'reward': reward, 'new_balance': new_balance}
+    
+    # ========== دوال الأصدقاء ==========
+    
+    def add_friend(self, user_id: int, friend_id: int):
+        """إضافة صديق"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    INSERT INTO friends (user_id, friend_id)
+                    VALUES (%s, %s)
+                """, (user_id, friend_id))
+                conn.commit()
+                return True
+            except psycopg2.IntegrityError:
+                return False
+            finally:
+                cursor.close()
+    
+    def get_friends(self, user_id: int):
+        """جلب قائمة الأصدقاء"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT p.user_id, p.first_name, p.level, p.total_earned
+                FROM friends f
+                JOIN players p ON f.friend_id = p.user_id
+                WHERE f.user_id = %s
+                ORDER BY p.total_earned DESC
+            """, (user_id,))
+            friends = [dict(row) for row in cursor.fetchall()]
+            cursor.close()
+            return friends
 
-# إنشاء instance عام
 db = Database()

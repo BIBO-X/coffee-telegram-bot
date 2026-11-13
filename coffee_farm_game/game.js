@@ -7,6 +7,8 @@ if (tg) {
   tg.expand(); // توسيع اللعبة لتملأ الشاشة
 }
 
+const API_URL = "coffee-telegram-bot-production.up.railway.app"
+
 // مفتاح الحفظ: مربوط بحساب اللاعب في تيليجرام إن وُجد
 const playerId = tg?.initDataUnsafe?.user?.id || "local-player";
 const SAVE_KEY = `coffee-farm-${playerId}`;
